@@ -1,0 +1,16 @@
+# 忽略数据文件夹
+data/
+HWDB2x/
+Competition13Line/
+
+# 忽略输出的模型和日志
+output/
+wandb/
+runs/
+__pycache__/
+*.pth
+*.log
+
+# 忽略 IDE 配置
+.idea/
+.vscode/

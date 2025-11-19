@@ -62,11 +62,22 @@ class CTCLabelConverter(object):
         self.character = ['[blank]'] + dict_character
 
     def encode(self, text):
-        length = [len(s) for s in text]
-        text = ''.join(text)
-        text = [self.dict[char] for char in text]
+        length = []
+        encoded_text = []
 
-        return (torch.IntTensor(text).to(device), torch.IntTensor(length).to(device))
+        for s in text:
+            current_len = 0
+            for char in s:
+                if char in self.dict:
+                    encoded_text.append(self.dict[char])
+                    current_len += 1
+                else:
+                    # 遇到未知道字符，直接跳过（或者你可以选择打印警告）
+                    # print(f"[Warning] Skipping unknown char: {char}")
+                    pass
+            length.append(current_len)
+
+        return (torch.IntTensor(encoded_text).to(device), torch.IntTensor(length).to(device))
 
     def decode(self, text_index, length):
         texts = []

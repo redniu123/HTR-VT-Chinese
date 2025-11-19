@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from timm.models.vision_transformer import Mlp, DropPath
 
+from model.local_attention import LocalAttentionModule
+
 import numpy as np
 from model import resnet18
 from functools import partial
@@ -155,6 +157,17 @@ class MaskedAutoencoderViT(nn.Module):
         # MAE encoder specifics
         self.layer_norm = LayerNorm()
         self.patch_embed = resnet18.ResNet18(embed_dim)
+
+        # --- [你的创新点] 插入 Local Attention Module ---
+        # window_size=[2, 4] 意味着在 2x4 的小窗口内看细节
+        # 这有助于捕捉汉字的偏旁部首结构
+        self.lam = LocalAttentionModule(dim=embed_dim, window_size=[2, 4], num_heads=6)
+        # ----------------------------------------------
+
+        self.grid_size = [img_size[0] // patch_size[0], img_size[1] // patch_size[1]]
+        # ... 原有代码 ...
+
+
         self.grid_size = [img_size[0] // patch_size[0], img_size[1] // patch_size[1]]
         self.embed_dim = embed_dim
         self.num_patches = self.grid_size[0] * self.grid_size[1]
@@ -220,21 +233,60 @@ class MaskedAutoencoderViT(nn.Module):
         return x_masked
 
     def forward(self, x, mask_ratio=0.0, max_span_length=1, use_masking=False):
-        # embed patches
+        # 1. 基础特征提取
         x = self.layer_norm(x)
         x = self.patch_embed(x)
+
+        # --- Debug: 打印 ResNet 输出形状 ---
+        # print(f"DEBUG: Shape after ResNet: {x.shape}")
+
+        # 2. 你的 Local Attention 模块
+        if hasattr(self, 'lam'):
+            x = self.lam(x)
+            # --- Debug: 打印 LAM 输出形状 ---
+            # print(f"DEBUG: Shape after LAM: {x.shape}")
+
+        # --- [核心修复] 维度检查与自动恢复 ---
+        if x.dim() == 3:
+            # 如果变成了 [B, C, L] 或 [B, N, C] (3维)，我们必须把它变回 4维 [B, C, H, W]
+            # 假设 HTR 任务中高度被压缩，我们尝试恢复
+            B, C_or_N, L_or_C = x.shape
+
+            # 情况 A: [B, C, L] -> 视为 [B, C, 1, W]
+            # 这种情况最常见，我们将 H 设为 1
+            if C_or_N == 768:  # 假设 Channel 是 768
+                x = x.unsqueeze(-1)  # [B, C, L, 1] -> 此时 H=L, W=1，或者反过来
+                # 尝试把它 permute 成 [B, C, 1, L]
+                x = x.permute(0, 1, 3, 2)
+
+                # 情况 B: [B, N, C] -> [B, C, N] -> [B, C, 1, W]
+            elif L_or_C == 768:
+                x = x.transpose(1, 2)  # [B, C, N]
+                x = x.unsqueeze(2)  # [B, C, 1, N]
+
+            # print(f"DEBUG: Auto-fixed shape to: {x.shape}")
+        # ------------------------------------
+
+        # 3. 解包形状 (现在应该安全了)
         b, c, w, h = x.shape
+
+        # 4. 展平给 Transformer
         x = x.view(b, c, -1).permute(0, 2, 1)
-        # masking: length -> length * mask_ratio
+
+        # 5. Masking (如果需要)
         if use_masking:
             x = self.random_masking(x, mask_ratio, max_span_length)
+
+        # 6. Positional Embedding
         x = x + self.pos_embed
-        # apply Transformer blocks
+
+        # 7. Transformer Blocks
         for blk in self.blocks:
             x = blk(x)
 
         x = self.norm(x)
-        # To CTC Loss
+
+        # 8. Head (CTC Loss)
         x = self.head(x)
         x = self.layer_norm(x)
 

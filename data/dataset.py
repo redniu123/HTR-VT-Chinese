@@ -8,6 +8,7 @@ from torch.utils.data import Dataset
 from utils import utils
 from data import transform as transform
 from torchvision.transforms import ColorJitter
+from tqdm import tqdm  # <--- 新增
 
 
 def SameTrCollate(batch, args):
@@ -108,13 +109,34 @@ def get_images(fname, max_w=500, max_h=500, nch=1):  # args.max_w args.max_h arg
     return image_data
 
 
+# def get_labels(fnames):
+#     labels = []
+#     for id, image_file in enumerate(fnames):
+#         fn = os.path.splitext(image_file)[0] + '.txt'
+#         # lbl = open(fn, 'r').read()
+#         lbl = open(fn, 'r', encoding='utf-8').read()
+#
+#         lbl = ' '.join(lbl.split())  # remove linebreaks if present
+#
+#         labels.append(lbl)
+#
+#     return labels
+
+
 def get_labels(fnames):
     labels = []
-    for id, image_file in enumerate(fnames):
-        fn = os.path.splitext(image_file)[0] + '.txt'
-        lbl = open(fn, 'r').read()
-        lbl = ' '.join(lbl.split())  # remove linebreaks if present
+    print(f"正在读取 {len(fnames)} 个标签文件...")  # <--- 新增提示
 
+    # 使用 tqdm 包装循环
+    for id, image_file in enumerate(tqdm(fnames, desc="Loading Labels")):
+        fn = os.path.splitext(image_file)[0] + '.txt'
+        # ... (中间代码保持不变，注意 encoding='utf-8') ...
+        try:
+            lbl = open(fn, 'r', encoding='utf-8').read()
+        except Exception:
+            lbl = ""  # 容错处理
+
+        lbl = ' '.join(lbl.split())
         labels.append(lbl)
 
     return labels

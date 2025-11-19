@@ -114,4 +114,27 @@ def get_args_parser():
                      help='test data list')
     LAM.add_argument('--nb-cls', default=90, type=int, help='nb of classes, IAM=79+1, READ2016=89+1')
 
+    # --- 在 utils/option.py 的最后，return parser.parse_args() 之前添加 ---
+
+    ICDAR2013 = subparsers.add_parser("ICDAR2013",
+                                      description='Dataset parser for training on ICDAR2013',
+                                      add_help=True,
+                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+                                      help="Dataset parser for training on ICDAR2013")
+
+    # 请确保以下路径指向你的真实数据路径
+    ICDAR2013.add_argument('--train-data-list', type=str, default='./data/icdar2013/train.ln',
+                           help='train data list (ln file)')
+    ICDAR2013.add_argument('--data-path', type=str, default='./data/icdar2013/lines/',
+                           help='root path to images')
+    ICDAR2013.add_argument('--val-data-list', type=str, default='./data/icdar2013/val.ln',
+                           help='val data list')
+    ICDAR2013.add_argument('--test-data-list', type=str, default='./data/icdar2013/test.ln',
+                           help='test data list')
+
+    # 【关键】nb-cls = 你的汉字总数 + 1 (blank)
+    # 假设 ICDAR 2013 有约 3755 个常用汉字，加上空白符大约是 3756
+    # 你必须统计你 labels 中不重复的字符数量，再加上 1
+    ICDAR2013.add_argument('--nb-cls', default=3756, type=int, help='nb of classes')
+
     return parser.parse_args()
