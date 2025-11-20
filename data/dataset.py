@@ -12,38 +12,69 @@ from tqdm import tqdm  # <--- 新增
 
 
 def SameTrCollate(batch, args):
+    # 1. 解包 Batch
+    # raw_images 是来自 __getitem__ 的列表，里面的元素应该是 [C, H, W] 的 float32 (0-1) numpy 数组
+    raw_images, labels = zip(*batch)
 
-    images, labels = zip(*batch)
-    images = [Image.fromarray(np.uint8(images[i][0] * 255)) for i in range(len(images))]
-
-    # Apply data augmentations with 90% probability
-    if np.random.rand() < 0.5:
-        images = [transform.RandomTransform(args.proj)(image) for image in images]
-
-    if np.random.rand() < 0.5:
-        kernel_h = utils.randint(1, args.dila_ero_max_kernel + 1)
-        kernel_w = utils.randint(1, args.dila_ero_max_kernel + 1)
-        if utils.randint(0, 2) == 0:
-            images = [transform.Erosion((kernel_w, kernel_h), args.dila_ero_iter)(image) for image in images]
+    # 2. 将 Numpy 数组转换为 PIL Images (为了进行数据增强)
+    pil_images = []
+    for img in raw_images:
+        # img shape: [C, H, W] (例如 [1, 64, 512])
+        # 我们需要取出图像数据 [H, W] 并还原到 0-255 范围转为 uint8
+        
+        # 取出第一个通道 (假设是灰度图)
+        if img.ndim == 3:
+            img_data = img[0]
         else:
-            images = [transform.Dilation((kernel_w, kernel_h), args.dila_ero_iter)(image) for image in images]
+            img_data = img
+            
+        # 还原数值范围 (0.0-1.0 -> 0-255) 并转为 uint8
+        img_uint8 = (img_data * 255.0).astype(np.uint8)
+        
+        # 转为 PIL Image ('L' 表示灰度模式)
+        pil_img = Image.fromarray(img_uint8, mode='L')
+        pil_images.append(pil_img)
+
+    # 3. 应用数据增强 (Data Augmentation)
+    # 这些变换函数 (RandomTransform, Erosion 等) 都是针对 PIL Image 设计的
+    # if np.random.rand() < 0.5:
+    #     pil_images = [transform.RandomTransform(args.proj)(image) for image in pil_images]
+
+    # if np.random.rand() < 0.5:
+    #     kernel_h = utils.randint(1, args.dila_ero_max_kernel + 1)
+    #     kernel_w = utils.randint(1, args.dila_ero_max_kernel + 1)
+    #     if utils.randint(0, 2) == 0:
+    #         pil_images = [transform.Erosion((kernel_w, kernel_h), args.dila_ero_iter)(image) for image in pil_images]
+    #     else:
+    #         pil_images = [transform.Dilation((kernel_w, kernel_h), args.dila_ero_iter)(image) for image in pil_images]
 
     if np.random.rand() < 0.5:
-        images = [ColorJitter(args.jitter_brightness, args.jitter_contrast, args.jitter_saturation,
-                              args.jitter_hue)(image) for image in images]
+        pil_images = [ColorJitter(args.jitter_brightness, args.jitter_contrast, args.jitter_saturation,
+                              args.jitter_hue)(image) for image in pil_images]
 
-    # Convert images to tensors
-
-    image_tensors = [torch.from_numpy(np.array(image, copy=True)) for image in images]
+    # 4. 将增强后的 PIL Images 转回 PyTorch Tensors
+    # 这一步会把 uint8 (0-255) 再次转回 float32 (0.0-1.0)，符合模型输入要求
+    image_tensors = [torch.from_numpy(np.array(image, copy=True)) for image in pil_images]
+    
+    # 堆叠成 Batch: [B, H, W]
     image_tensors = torch.cat([t.unsqueeze(0) for t in image_tensors], 0)
+    
+    # 增加 Channel 维度: [B, 1, H, W] 并转 float 除以 255
     image_tensors = image_tensors.unsqueeze(1).float()
     image_tensors = image_tensors / 255.
+    
     return image_tensors, labels
 
 
 class myLoadDS(Dataset):
     def __init__(self, flist, dpath, img_size=[512, 32], ralph=None, fmin=True, mln=None):
         self.fns = get_files(flist, dpath)
+
+
+        # print("⚠️ WARNING: DEBUG MODE ON - ONLY LOADING 1000 SAMPLES ⚠️")
+        # self.fns = self.fns[:1000]
+
+
         self.tlbls = get_labels(self.fns)
         self.img_size = img_size
 
@@ -54,6 +85,36 @@ class myLoadDS(Dataset):
         else:
             self.ralph = ralph
 
+            # --- 🔥 新增：预加载所有图片到内存 ---
+        print(f"🚀 Pre-loading {len(self.fns)} images to RAM (High Speed Mode)...")
+        self.cached_images = []
+        # 使用 tqdm 显示加载进度
+        for fname in tqdm(self.fns, desc="Caching"):
+            try:
+                # 1. 读取
+                img = Image.open(fname).convert('L')
+                # 2. 提前做完 Resize 和 Pad (最耗时的步骤)
+                img_np = npThum(np.array(img), img_size[0], img_size[1])
+                
+                # 3. 统一处理成标准 numpy 格式存入内存
+                # 这里的处理逻辑复制自原 get_images 函数
+                # 注意：为了节省内存，这里存 uint8，不要存 float32
+                h, w = img_np.shape[:2]
+                pad_img = np.ones((img_size[1], img_size[0]), dtype=np.uint8) * 255 # 白底
+                pad_img[:h, :w] = img_np
+                
+                self.cached_images.append(pad_img)
+                
+            except Exception as e:
+                # print(f"Error loading {fname}: {e}")
+                # 容错：给一张全白图
+                self.cached_images.append(np.ones((img_size[1], img_size[0]), dtype=np.uint8) * 255)
+        
+        print("✅ All images loaded to RAM!")
+
+
+
+
         if mln != None:
             filt = [len(x) <= mln if fmin else len(x) >= mln for x in self.tlbls]
             self.tlbls = np.asarray(self.tlbls)[filt].tolist()
@@ -63,9 +124,22 @@ class myLoadDS(Dataset):
         return len(self.fns)
 
     def __getitem__(self, index):
-        timgs = get_images(self.fns[index], self.img_size[0], self.img_size[1])
-        timgs = timgs.transpose((2, 0, 1))
-
+        # 1. 从内存获取缓存的 uint8 数据 [H, W]
+        img_data_uint8 = self.cached_images[index] 
+        
+        # 2. 转为 float32 并归一化到 [0, 1]
+        # 这是修复报错的关键！
+        img_data_float = img_data_uint8.astype(np.float32) / 255.0
+        
+        # 3. 增加 Channel 维度 [H, W] -> [H, W, 1]
+        # 注意：如果是灰度图，通常需要unsqueeze一下
+        if img_data_float.ndim == 2:
+            img_data_float = img_data_float[:, :, np.newaxis] # [H, W, 1]
+            
+        # 4. 转置为 PyTorch 格式 [C, H, W]
+        # [H, W, C] -> [C, H, W]
+        timgs = img_data_float.transpose((2, 0, 1)) 
+        
         return (timgs, self.tlbls[index])
 
 

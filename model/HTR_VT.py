@@ -278,7 +278,25 @@ class MaskedAutoencoderViT(nn.Module):
             x = self.random_masking(x, mask_ratio, max_span_length)
 
         # 6. Positional Embedding
-        x = x + self.pos_embed
+        # x = x + self.pos_embed
+        # --- [修复] 动态调整 pos_embed 尺寸 ---
+        if x.shape[1] != self.pos_embed.shape[1]:
+            # x: [B, N, C]
+            # pos_embed: [1, N_origin, C]
+            # 我们假设 pos_embed 是 1D 序列，直接插值
+            pe = self.pos_embed.transpose(1, 2) # [1, C, N_origin]
+            x_t = x.transpose(1, 2) # [B, C, N]
+            
+            # 使用线性插值调整 PE 长度
+            new_pe = torch.nn.functional.interpolate(
+                pe, size=x.shape[1], mode='linear', align_corners=False
+            ) # [1, C, N]
+            
+            new_pe = new_pe.transpose(1, 2) # [1, N, C]
+            x = x + new_pe
+        else:
+            x = x + self.pos_embed
+        # ----------------------------------
 
         # 7. Transformer Blocks
         for blk in self.blocks:

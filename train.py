@@ -1,12 +1,18 @@
+import os
+# --- 🔥 [核心修复] 强制禁用 NCCL P2P 和 IB，解决多卡报错 ---
+os.environ["NCCL_P2P_DISABLE"] = "1"
+os.environ["NCCL_IB_DISABLE"] = "1"
+
+from torch.cuda.amp import autocast, GradScaler
 import torch
 import torch.utils.data
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm  # <--- [新增 1] 导入 tqdm
-
 import wandb  # 🔥 [WandB] 导入库
-
 import os
+# os.environ["NCCL_P2P_DISABLE"] = "1"  # 尝试修复多卡通信
+# os.environ["NCCL_IB_DISABLE"] = "1"
 import json
 import valid
 from utils import utils  # 注意：如果你之前改成了 my_utils，这里要对应修改
@@ -74,6 +80,10 @@ def log_predictions_to_wandb(model, val_loader, converter, step, max_images=8):
 
 
 def main():
+
+    import torch.multiprocessing
+# 核心黑科技：把数据交换从内存转移到硬盘文件，绕过 64MB 限制
+    torch.multiprocessing.set_sharing_strategy('file_system')
     args = option.get_args_parser()
     torch.manual_seed(args.seed)
 
@@ -106,7 +116,15 @@ def main():
         wandb.config.update({"total_params": total_param})  # 补充记录参数量
 
     model.train()
+    # ...
+    if torch.cuda.device_count() > 1:
+        print(f"🚀 Let's use {torch.cuda.device_count()} GPUs!")
+        model = torch.nn.DataParallel(model)
     model = model.cuda()
+    # ...
+    model = model.cuda()
+
+
     model_ema = utils.ModelEma(model, args.ema_decay)
     model.zero_grad()
 
@@ -123,8 +141,12 @@ def main():
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.val_bs, shuffle=False, pin_memory=True,
                                              num_workers=args.num_workers)
 
-    optimizer = sam.SAM(model.parameters(), torch.optim.AdamW, lr=1e-7, betas=(0.9, 0.99),
-                        weight_decay=args.weight_decay)
+    # optimizer = sam.SAM(model.parameters(), torch.optim.AdamW, lr=1e-7, betas=(0.9, 0.99),
+    #                     weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.max_lr, weight_decay=args.weight_decay)
+
+    scaler = torch.cuda.amp.GradScaler(enabled=True)
+    # scaler = torch.cuda.amp.GradScaler()#！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
     criterion = torch.nn.CTCLoss(reduction='none', zero_infinity=True)
     converter = utils.CTCLabelConverter(train_dataset.ralph.values())
 
@@ -145,11 +167,19 @@ def main():
         batch_size = image.size(0)
 
         # Forward & Backward
-        loss = compute_loss(args, model, image, batch_size, criterion, text, length)
-        loss.backward()
-        optimizer.first_step(zero_grad=True)
-        compute_loss(args, model, image, batch_size, criterion, text, length).backward()
-        optimizer.second_step(zero_grad=True)
+        # loss = compute_loss(args, model, image, batch_size, criterion, text, length)
+        # loss.backward()
+        # optimizer.first_step(zero_grad=True)
+        # compute_loss(args, model, image, batch_size, criterion, text, length).backward()
+        # optimizer.second_step(zero_grad=True)
+        # 开启混合精度上下文 (FP16)
+        with torch.cuda.amp.autocast():
+            loss = compute_loss(args, model, image, batch_size, criterion, text, length)
+        
+        # 使用 Scaler 进行反向传播和参数更新
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         model.zero_grad()
         model_ema.update(model, num_updates=nb_iter / 2)
