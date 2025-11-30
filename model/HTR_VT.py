@@ -161,7 +161,7 @@ class MaskedAutoencoderViT(nn.Module):
         # --- [你的创新点] 插入 Local Attention Module ---
         # window_size=[2, 4] 意味着在 2x4 的小窗口内看细节
         # 这有助于捕捉汉字的偏旁部首结构
-        self.lam = LocalAttentionModule(dim=embed_dim, window_size=[2, 4], num_heads=6)
+        # self.lam = LocalAttentionModule(dim=embed_dim, window_size=[2, 4], num_heads=6)
         # ----------------------------------------------
 
         self.grid_size = [img_size[0] // patch_size[0], img_size[1] // patch_size[1]]
@@ -241,10 +241,10 @@ class MaskedAutoencoderViT(nn.Module):
         # print(f"DEBUG: Shape after ResNet: {x.shape}")
 
         # 2. 你的 Local Attention 模块
-        if hasattr(self, 'lam'):
-            x = self.lam(x)
-            # --- Debug: 打印 LAM 输出形状 ---
-            # print(f"DEBUG: Shape after LAM: {x.shape}")
+        # if hasattr(self, 'lam'):
+        #     x = self.lam(x)
+        #     # --- Debug: 打印 LAM 输出形状 ---
+        #     # print(f"DEBUG: Shape after LAM: {x.shape}")
 
         # --- [核心修复] 维度检查与自动恢复 ---
         if x.dim() == 3:
